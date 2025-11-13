@@ -1,145 +1,108 @@
-steps:
-  - name: Checkout
-    uses: actions/checkout@v4
+name: Deploy Supabase Edge Function
 
-  - name: Prepare Node
-    uses: actions/setup-node@v4
-    with:
-      node-version: "20"
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-  # DEBUG TEMP: verifica presença dos secrets (remova depois)
-  - name: Debug: presence of relevant secrets
-    shell: bash
-    run: |
-      echo "Checking presence of secrets (values are masked)"
-      if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then
-        echo "SUPABASE_ASSET_URL: present"
-      else
-        echo "SUPABASE_ASSET_URL: MISSING"
-      fi
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-      if [ -n "${{ secrets.SUPABASE_PROJECT_REF }}" ]; then
-        echo "SUPABASE_PROJECT_REF: present"
-      else
-        echo "SUPABASE_PROJECT_REF: MISSING"
-      fi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      if [ -n "${{ secrets.SUPABASE_TOKEN }}" ]; then
-        echo "SUPABASE_TOKEN: present"
-      else
-        echo "SUPABASE_TOKEN: MISSING"
-      fi
+      - name: Prepare Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      if [ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
-        echo "SUPABASE_SERVICE_ROLE_KEY: present (fallback)"
-      else
-        echo "SUPABASE_SERVICE_ROLE_KEY: NOT present"
-      fi
+      # DEBUG TEMP: verifica presença dos secrets (remova depois)
+      - name: Debug: presence of relevant secrets
+        shell: bash
+        run: |
+          echo "Checking presence of secrets (values are masked)"
+          if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then
+            echo "SUPABASE_ASSET_URL: present"
+          else
+            echo "SUPABASE_ASSET_URL: MISSING"
+          fi
 
-  - name: Determine Supabase CLI asset URL
-    shell: bash
-    env:
-      SUPABASE_ASSET_URL: ${{ secrets.SUPABASE_ASSET_URL }}
-    run: |
-      set -euo pipefail
+          if [ -n "${{ secrets.SUPABASE_PROJECT_REF }}" ]; then
+            echo "SUPABASE_PROJECT_REF: present"
+          else
+            echo "SUPABASE_PROJECT_REF: MISSING"
+          fi
 
-      if [ -n "${SUPABASE_ASSET_URL:-}" ]; then
-        echo "Using SUPABASE_ASSET_URL from secret"
-        echo "ASSET_URL=$SUPABASE_ASSET_URL" >> "$GITHUB_ENV"
-        exit 0
-      fi
+          if [ -n "${{ secrets.SUPABASE_TOKEN }}" ]; then
+            echo "SUPABASE_TOKEN: present"
+          else
+            echo "SUPABASE_TOKEN: MISSING"
+          fi
 
-      REPO="supabase/cli"
-      ARCH_UNAME="$(uname -m)"
-      case "$ARCH_UNAME" in
-        x86_64|x64|x86-64) ARCH="amd64" ;;
-        aarch64|arm64) ARCH="arm64" ;;
-        *) ARCH="$ARCH_UNAME" ;;
-      esac
+          if [ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "SUPABASE_SERVICE_ROLE_KEY: present (fallback)"
+          else
+            echo "SUPABASE_SERVICE_ROLE_KEY: NOT present"
+          fi
 
-      ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-        | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
-        | grep -i "linux" \
-        | grep -i "$ARCH" \
-        | grep -iE "tar.gz|tgz" \
-        | head -n1 || true)"
+      - name: Determine Supabase CLI asset URL
+        shell: bash
+        env:
+          SUPABASE_ASSET_URL: ${{ secrets.SUPABASE_ASSET_URL }}
+        run: |
+          set -euo pipefail
 
-      if [ -z "$ASSET_URL" ]; then
-        ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-          | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
-          | grep -i "linux" \
-          | grep -i "$ARCH" \
-          | grep -i '\.deb' \
-          | head -n1 || true)"
-      fi
+          if [ -n "${SUPABASE_ASSET_URL:-}" ]; then
+            echo "Using SUPABASE_ASSET_URL from secret"
+            echo "ASSET_URL=$SUPABASE_ASSET_URL" >> "$GITHUB_ENV"
+            exit 0
+          fi
 
-      echo "Chosen asset URL: ${ASSET_URL:-<none>}"
-      if [ -z "${ASSET_URL:-}" ]; then
-        echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set SUPABASE_ASSET_URL secret to a release tar.gz/.deb URL."
-        exit 1
-      fi
+          REPO="supabase/cli"
+          ARCH_UNAME="$(uname -m)"
+          case "$ARCH_UNAME" in
+            x86_64|x64|x86-64) ARCH="amd64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) ARCH="$ARCH_UNAME" ;;
+          esac
 
-      echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
+          ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+            | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+            | grep -i "linux" \
+            | grep -i "$ARCH" \
+            | grep -iE "tar.gz|tgz" \
+            | head -n1 || true)"
 
-  - name: Install / Prepare Supabase CLI
-    shell: bash
-    run: |
-      set -euo pipefail
+          if [ -z "$ASSET_URL" ]; then
+            ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+              | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+              | grep -i "linux" \
+              | grep -i "$ARCH" \
+              | grep -i '\.deb' \
+              | head -n1 || true)"
+          fi
 
-      echo "Downloading asset from: ${ASSET_URL}"
-      curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
-      file supabase_asset || true
+          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
+          if [ -z "${ASSET_URL:-}" ]; then
+            echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set SUPABASE_ASSET_URL secret to a release tar.gz/.deb URL."
+            exit 1
+          fi
 
-      if file supabase_asset | grep -qi 'gzip'; then
-        echo "Extracting tar.gz..."
-        rm -rf supabase
-        tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
-        SUPABASE_BIN="$(find . -type f -name supabase -perm -111 -print -quit || true)"
-        if [ -n "$SUPABASE_BIN" ]; then
-          sudo mv -f "$SUPABASE_BIN" /usr/local/bin/supabase
-          sudo chmod +x /usr/local/bin/supabase
-          SUPABASE_BIN="/usr/local/bin/supabase"
-        fi
-      elif file supabase_asset | grep -qi 'Debian'; then
-        echo "Installing .deb..."
-        sudo dpkg -i supabase_asset || { echo "ERROR: dpkg failed"; exit 1; }
-        SUPABASE_BIN="$(which supabase || true)"
-      else
-        echo "Unknown asset format; aborting."
-        exit 1
-      fi
+          echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
 
-      if [ -z "${SUPABASE_BIN:-}" ]; then
-        echo "ERROR: supabase binary not found after asset install"
-        exit 1
-      fi
+      - name: Install / Prepare Supabase CLI
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      echo "SUPABASE_BIN=$SUPABASE_BIN" >> "$GITHUB_ENV"
-      echo "Using supabase binary at: $SUPABASE_BIN"
+          echo "Downloading asset from: ${ASSET_URL}"
+          curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
+          file supabase_asset || true
 
-  - name: Deploy Supabase Edge Function
-    shell: bash
-    env:
-      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-      SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-    run: |
-      set -euo pipefail
-
-      FUNCTION_NAME="make-server-370b3cd1"
-
-      if [ -z "${SUPABASE_BIN:-}" ]; then
-        echo "ERROR: SUPABASE_BIN not set in environment"
-        exit 1
-      fi
-
-      # Prioritize SUPABASE_TOKEN; fallback to SUPABASE_SERVICE_ROLE_KEY if missing
-      export SUPABASE_ACCESS_TOKEN="${SUPABASE_TOKEN:-${SUPABASE_SERVICE_ROLE_KEY:-}}"
-
-      if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
-        echo "ERROR: nenhum token disponível. Configure secret SUPABASE_TOKEN (recomendado) ou SUPABASE_SERVICE_ROLE_KEY"
-        exit 1
-      fi
-
-      echo "DEBUG: SUPABASE_ACCESS_TOKEN está definido (valor mascarado)"
-      $SUPABASE_BIN functions deploy "$FUNCTION_NAME" --project-ref "$SUPABASE_PROJECT_REF" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
+          if file supabase_asset | grep -qi 'gzip'; then
+            echo "Extracting tar.gz..."
+            rm -rf supabase
+            tar -](#)
