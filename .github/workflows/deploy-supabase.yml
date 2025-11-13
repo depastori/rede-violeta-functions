@@ -1,4 +1,4 @@
-- name: Install Supabase CLI (download binary)
+name: Install Supabase CLI (download binary)
         run: |
           # Busca a tag mais recente usando python (mais portátil que grep -P)
           SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))")
