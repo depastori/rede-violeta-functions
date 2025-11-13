@@ -18,30 +18,37 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Supabase CLI (download specific asset, no heredoc)
+      - name: Install Supabase CLI (robust download & extract)
         run: |
           set -euo pipefail
-          echo "Fetching latest release metadata..."
-          SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | sed -n 's/.*"tag_name": *"\([^"]]*\)".*/\1/p')
+          echo "=== Fetching latest release metadata from GitHub API ==="
+          # Request with headers to reduce chance of rejection
+          RELEASE_JSON=$(curl -sS -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/supabase/cli/releases/latest" || true)
+          echo "Raw release JSON snippet (first 400 chars):"
+          printf '%s\n' "${RELEASE_JSON:0:400}"
+          SUPABASE_CLI_TAG=$(printf '%s' "$RELEASE_JSON" | python3 -c "import sys, json; d=sys.stdin.read(); print(json.loads(d).get('tag_name','') if d.strip() else '')" 2>/dev/null || true)
+          FALLBACK_TAG="v2.58.5"
           if [ -z "$SUPABASE_CLI_TAG" ]; then
-            echo "ERROR: could not determine latest tag"; exit 1
+            echo "WARN: could not determine latest tag from API. Falling back to $FALLBACK_TAG"
+            SUPABASE_CLI_TAG="$FALLBACK_TAG"
           fi
           SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
-          echo "Latest tag: $SUPABASE_CLI_TAG -> version: $SUPABASE_CLI_VER"
+          echo "Using supabase cli tag: $SUPABASE_CLI_TAG (ver: $SUPABASE_CLI_VER)"
           ASSET_URL="https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz"
           echo "Attempting download from: $ASSET_URL"
-          curl -L --fail -o supabase_asset.tar.gz "$ASSET_URL" || { echo "Download failed"; exit 1; }
+          # download (fail fast)
+          curl -L --fail -o supabase_asset.tar.gz "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
           echo "Downloaded — checking archive..."
           if tar -tzf supabase_asset.tar.gz >/dev/null 2>&1; then
             tar -xzf supabase_asset.tar.gz
           else
-            # try unzip if zip
             if file supabase_asset.tar.gz | grep -qi zip >/dev/null 2>&1; then
+              echo "Detected zip file — installing unzip and extracting"
               sudo apt-get update -y
               sudo apt-get install -y unzip
               unzip supabase_asset.tar.gz
             else
-              # assume binary
+              echo "Not a recognized archive; treating as binary"
               chmod +x supabase_asset.tar.gz
               mv supabase_asset.tar.gz supabase || true
             fi
@@ -51,17 +58,22 @@ jobs:
             if [ -f "./supabase" ]; then
               SUPABASE_BIN="./supabase"
             else
-              echo "Could not find supabase binary after extraction"; ls -la; exit 1
+              echo "ERROR: Could not find supabase binary after extraction. Listing files:"
+              ls -la
+              exit 1
             fi
           fi
           echo "Found supabase binary at: $SUPABASE_BIN"
           sudo mv "$SUPABASE_BIN" /usr/local/bin/supabase
-          /usr/local/bin/supabase --version
+          echo "Supabase CLI version:"
+          /usr/local/bin/supabase --version || true
 
       - name: Deploy function
         env:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          /usr/local/bin/supabase --version
+          echo "Supabase CLI before deploy:"
+          /usr/local/bin/supabase --version || true
+          echo "Deploying function make-server-370b3cd1..."
           /usr/local/bin/supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
