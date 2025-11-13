@@ -1,0 +1,30 @@
+name: Deploy Supabase Edge Function
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Supabase CLI
+        run: npm i -g supabase
+
+      - name: Deploy function
+        env:
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          supabase --version
+          supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
