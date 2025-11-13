@@ -145,7 +145,7 @@ jobs:
             exit 1
           fi
 
-          # Prioriza SUPABASE_TOKEN; se ausente, usa SUPABASE_SERVICE_ROLE_KEY (fallback temporário)
+          # Prioritize SUPABASE_TOKEN; fallback to SUPABASE_SERVICE_ROLE_KEY if missing
           export SUPABASE_ACCESS_TOKEN="${SUPABASE_TOKEN:-${SUPABASE_SERVICE_ROLE_KEY:-}}"
 
           if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
@@ -154,5 +154,4 @@ jobs:
           fi
 
           echo "DEBUG: SUPABASE_ACCESS_TOKEN está definido (valor mascarado)"
-          $SUPABASE_BIN functions deploy "$FUNCTION_NAME" \
-            --project-ref "$SUPABASE_PROJECT_REF" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
+          $SUPABASE_BIN functions deploy "$FUNCTION_NAME" --project-ref "$SUPABASE_PROJECT_REF" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
