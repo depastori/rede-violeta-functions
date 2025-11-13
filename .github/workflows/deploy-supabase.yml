@@ -2,9 +2,12 @@ name: Deploy Supabase Edge Function
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
+
+env:
+  # Optional: set SUPABASE_CLI_TAG to a specific tag (e.g. v2.58.4). Leave empty to auto-detect latest.
+  SUPABASE_CLI_TAG: ""
 
 jobs:
   deploy:
@@ -18,54 +21,102 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Supabase CLI (robust download & extract)
+      - name: Install Supabase CLI (auto-detect asset / fallback to npm)
         run: |
           set -euo pipefail
-          echo "=== Fetching latest release metadata from GitHub API ==="
-          # Request with headers to reduce chance of rejection
-          RELEASE_JSON=$(curl -sS -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/supabase/cli/releases/latest" || true)
-          echo "Raw release JSON snippet (first 400 chars):"
-          printf '%s\n' "${RELEASE_JSON:0:400}"
-          SUPABASE_CLI_TAG=$(printf '%s' "$RELEASE_JSON" | python3 -c "import sys, json; d=sys.stdin.read(); print(json.loads(d).get('tag_name','') if d.strip() else '')" 2>/dev/null || true)
-          FALLBACK_TAG="v2.58.5"
+          echo "SUPABASE_CLI_TAG (env): '$SUPABASE_CLI_TAG'"
+
           if [ -z "$SUPABASE_CLI_TAG" ]; then
-            echo "WARN: could not determine latest tag from API. Falling back to $FALLBACK_TAG"
-            SUPABASE_CLI_TAG="$FALLBACK_TAG"
-          fi
-          SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
-          echo "Using supabase cli tag: $SUPABASE_CLI_TAG (ver: $SUPABASE_CLI_VER)"
-          ASSET_URL="https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz"
-          echo "Attempting download from: $ASSET_URL"
-          # download (fail fast)
-          curl -L --fail -o supabase_asset.tar.gz "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
-          echo "Downloaded — checking archive..."
-          if tar -tzf supabase_asset.tar.gz >/dev/null 2>&1; then
-            tar -xzf supabase_asset.tar.gz
+            echo "Fetching latest release tag from GitHub API..."
+            RELEASE_JSON=$(curl -sS -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/supabase/cli/releases/latest" || true)
+            TAG=$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' || true)
+            if [ -z "$TAG" ]; then
+              echo "WARN: Could not parse latest tag from API; leaving SUPABASE_CLI_TAG empty to try fallback."
+            else
+              SUPABASE_CLI_TAG="$TAG"
+              echo "Latest tag: $SUPABASE_CLI_TAG"
+            fi
           else
-            if file supabase_asset.tar.gz | grep -qi zip >/dev/null 2>&1; then
-              echo "Detected zip file — installing unzip and extracting"
+            echo "Using pinned tag: $SUPABASE_CLI_TAG"
+          fi
+
+          # Build a list of candidate download URLs from release JSON (if we fetched it) or release API
+          ASSET_URL=""
+          if [ -n "${RELEASE_JSON:-}" ]; then
+            # prefer .tar.gz/.tgz, then deb, pkg.tar.zst, rpm, apk
+            ASSET_URL=$(printf '%s' "$RELEASE_JSON" \
+              | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+              | grep -i 'linux_amd64' \
+              | egrep -i '\.tar\.gz$|\.tgz$|\.deb$|\.pkg\.tar\.zst$|\.rpm$|\.apk$' \
+              | head -n1 || true)
+          fi
+
+          # If not found in release JSON but we have a tag, construct common names to test
+          if [ -z "$ASSET_URL" ] && [ -n "$SUPABASE_CLI_TAG" ]; then
+            VER="${SUPABASE_CLI_TAG#v}"
+            CANDIDATES=(
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.tar.gz"
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_linux_amd64.tar.gz"
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.deb"
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.pkg.tar.zst"
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.rpm"
+              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.apk"
+            )
+            for u in "${CANDIDATES[@]}"; do
+              if curl -sfI "$u" >/dev/null 2>&1; then
+                ASSET_URL="$u"
+                break
+              fi
+            done
+          fi
+
+          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
+
+          if [ -n "$ASSET_URL" ]; then
+            echo "Downloading asset..."
+            curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
+            file supabase_asset || true
+            # handle common formats
+            if file supabase_asset | grep -qi 'gzip'; then
+              echo "Extracting tar.gz..."
+              tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
+            elif file supabase_asset | grep -qi 'Debian'; then
+              echo "Installing .deb..."
               sudo apt-get update -y
-              sudo apt-get install -y unzip
-              unzip supabase_asset.tar.gz
+              sudo apt-get install -y wget ca-certificates
+              sudo dpkg -i supabase_asset || sudo apt-get install -y -f
+            elif file supabase_asset | grep -qi 'XZ compressed'; then
+              echo "Handling pkg.tar.zst or similar..."
+              sudo apt-get update -y
+              sudo apt-get install -y zstd
+              # try to extract or move to proper place if needed
+              tar -I zstd -xf supabase_asset || true
             else
-              echo "Not a recognized archive; treating as binary"
-              chmod +x supabase_asset.tar.gz
-              mv supabase_asset.tar.gz supabase || true
+              echo "Treating downloaded file as binary"
+              chmod +x supabase_asset || true
+              mv supabase_asset supabase || true
             fi
+            SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n1 || true)
+            [ -z "$SUPABASE_BIN" ] && [ -x "/usr/bin/supabase" ] && SUPABASE_BIN="/usr/bin/supabase"
+            [ -z "$SUPABASE_BIN" ] && [ -x "/usr/local/bin/supabase" ] && SUPABASE_BIN="/usr/local/bin/supabase"
+            [ -z "$SUPABASE_BIN" ] && [ -f "./supabase" ] && SUPABASE_BIN="./supabase"
           fi
-          SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n 1 || true)
-          if [ -z "$SUPABASE_BIN" ]; then
-            if [ -f "./supabase" ]; then
-              SUPABASE_BIN="./supabase"
-            else
-              echo "ERROR: Could not find supabase binary after extraction. Listing files:"
-              ls -la
-              exit 1
-            fi
+
+          if [ -z "${SUPABASE_BIN:-}" ]; then
+            echo "No binary found from release assets — falling back to npm install"
+            npm install -g supabase || { echo "ERROR: npm install -g supabase failed"; exit 1; }
+            SUPABASE_BIN="$(which supabase || true)"
           fi
-          echo "Found supabase binary at: $SUPABASE_BIN"
-          sudo mv "$SUPABASE_BIN" /usr/local/bin/supabase
-          echo "Supabase CLI version:"
+
+          if [ -z "${SUPABASE_BIN:-}" ]; then
+            echo "ERROR: supabase binary not found after all attempts"; exit 1
+          fi
+
+          echo "Supabase binary: $SUPABASE_BIN"
+          if [ "$SUPABASE_BIN" != "/usr/local/bin/supabase" ]; then
+            sudo mv "$SUPABASE_BIN" /usr/local/bin/supabase || true
+          fi
           /usr/local/bin/supabase --version || true
 
       - name: Deploy function
@@ -73,7 +124,6 @@ jobs:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          echo "Supabase CLI before deploy:"
           /usr/local/bin/supabase --version || true
           echo "Deploying function make-server-370b3cd1..."
           /usr/local/bin/supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
