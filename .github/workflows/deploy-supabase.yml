@@ -50,7 +50,6 @@ PY
           fi
           echo "Downloading asset: $ASSET_URL"
           curl -L "$ASSET_URL" -o supabase_asset || { echo "Download failed"; exit 1; }
-          # inspect file type
           FILETYPE=$(file supabase_asset || true)
           echo "Downloaded file type: $FILETYPE"
           if echo "$ASSET_URL" | grep -E '\.tar\.gz$|\.tgz$' >/dev/null 2>&1 || echo "$FILETYPE" | grep -i gzip >/dev/null 2>&1; then
@@ -59,14 +58,11 @@ PY
             apt-get update -y && apt-get install -y unzip
             unzip supabase_asset || { echo "Unzip failed"; ls -la; exit 1; }
           else
-            # if it's an executable binary directly
             chmod +x supabase_asset
             mv supabase_asset supabase || true
           fi
-          # find the supabase binary after extraction
           SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n 1 || true)
           if [ -z "$SUPABASE_BIN" ]; then
-            # try common binary name
             if [ -f "./supabase" ]; then
               SUPABASE_BIN="./supabase"
             else
