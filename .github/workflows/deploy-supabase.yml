@@ -126,7 +126,7 @@ jobs:
             exit 1
           fi
 
-          # Prioriza SUPABASE_TOKEN, se faltar usa SUPABASE_SERVICE_ROLE_KEY (fallback temporário)
+          # Prioriza SUPABASE_TOKEN; se ausente, usa SUPABASE_SERVICE_ROLE_KEY (fallback temporário)
           export SUPABASE_ACCESS_TOKEN="${SUPABASE_TOKEN:-${SUPABASE_SERVICE_ROLE_KEY:-}}"
 
           if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
