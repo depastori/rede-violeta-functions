@@ -1,4 +1,4 @@
-name: Deploy Supabase Edge Function
+﻿name: Deploy Supabase Edge Function
 
 on:
   push:
@@ -9,100 +9,93 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    env:
+      SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Prepare Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
-      # DEBUG TEMP: verifica presença dos secrets (remova depois)
-      - name: Debug: presence of relevant secrets
-        shell: bash
-        run: |
-          echo "Checking presence of secrets (values are masked)"
-          if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then
-            echo "SUPABASE_ASSET_URL: present"
-          else
-            echo "SUPABASE_ASSET_URL: MISSING"
-          fi
-
-          if [ -n "${{ secrets.SUPABASE_PROJECT_REF }}" ]; then
-            echo "SUPABASE_PROJECT_REF: present"
-          else
-            echo "SUPABASE_PROJECT_REF: MISSING"
-          fi
-
-          if [ -n "${{ secrets.SUPABASE_TOKEN }}" ]; then
-            echo "SUPABASE_TOKEN: present"
-          else
-            echo "SUPABASE_TOKEN: MISSING"
-          fi
-
-          if [ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
-            echo "SUPABASE_SERVICE_ROLE_KEY: present (fallback)"
-          else
-            echo "SUPABASE_SERVICE_ROLE_KEY: NOT present"
-          fi
-
-      - name: Determine Supabase CLI asset URL
-        shell: bash
-        env:
-          SUPABASE_ASSET_URL: ${{ secrets.SUPABASE_ASSET_URL }}
+      - name: Determine Supabase CLI asset URL (uses secret SUPABASE_ASSET_URL if provided)
+        id: determine_asset
         run: |
           set -euo pipefail
-
-          if [ -n "${SUPABASE_ASSET_URL:-}" ]; then
-            echo "Using SUPABASE_ASSET_URL from secret"
-            echo "ASSET_URL=$SUPABASE_ASSET_URL" >> "$GITHUB_ENV"
+          echo "Checking SUPABASE_ASSET_URL secret..."
+          if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then
+            echo "Chosen asset URL from secret"
+            echo "::set-output name=url::${{ secrets.SUPABASE_ASSET_URL }}"
             exit 0
           fi
-
-          REPO="supabase/cli"
-          ARCH_UNAME="$(uname -m)"
-          case "$ARCH_UNAME" in
-            x86_64|x64|x86-64) ARCH="amd64" ;;
-            aarch64|arm64) ARCH="arm64" ;;
-            *) ARCH="$ARCH_UNAME" ;;
-          esac
-
-          ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+          echo "No SUPABASE_ASSET_URL secret set — attempting to detect latest linux amd64 asset from GitHub releases..."
+          RELEASE_JSON=$(curl -sS -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/supabase/cli/releases/latest" || true)
+          echo "Snippet: ${RELEASE_JSON:0:300}"
+          ASSET_URL=$(printf '%s' "$RELEASE_JSON" \
             | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
             | grep -i "linux" \
-            | grep -i "$ARCH" \
-            | grep -iE "tar.gz|tgz" \
-            | head -n1 || true)"
-
-          if [ -z "$ASSET_URL" ]; then
-            ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-              | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
-              | grep -i "linux" \
-              | grep -i "$ARCH" \
-              | grep -i '\.deb' \
-              | head -n1 || true)"
+            | grep -i "amd64" \
+            | egrep -i '\.tar\.gz$|\.tgz$|\.deb$' \
+            | head -n1 || true)
+          if [ -n "$ASSET_URL" ]; then
+            echo "Detected asset URL: $ASSET_URL"
+            echo "::set-output name:url::$ASSET_URL"
+            exit 0
           fi
-
-          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
-          if [ -z "${ASSET_URL:-}" ]; then
-            echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set SUPABASE_ASSET_URL secret to a release tar.gz/.deb URL."
-            exit 1
-          fi
-
-          echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
-
+          echo "No suitable asset found in latest release — leaving output empty to allow npm fallback."
+          echo "::set-output name:url::"
       - name: Install / Prepare Supabase CLI
-        shell: bash
         run: |
           set -euo pipefail
+          ASSET_URL="${{ steps.determine_asset.outputs.url }}"
+          echo "Asset URL: ${ASSET_URL:-<none>}"
+          # Try to download & install if URL present
+          if [ -n "$ASSET_URL" ]; then
+            echo "Downloading asset..."
+            curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
+            file supabase_asset || true
+            if file supabase_asset | grep -qi 'gzip'; then
+              echo "Extracting tar.gz..."
+              tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
+            elif file supabase_asset | grep -qi 'Debian'; then
+              echo "Installing .deb..."
+              sudo apt-get update -y
+              sudo apt-get install -y wget ca-certificates
+              sudo dpkg -i supabase_asset || sudo apt-get install -y -f
+            else
+              echo "Treating download as binary"
+              chmod +x supabase_asset || true
+              mv supabase_asset supabase || true
+            fi
+            SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n 1 || true)
+            if [ -z "$SUPABASE_BIN" ]; then
+              if [ -x "/usr/bin/supabase" ]; then SUPABASE_BIN="/usr/bin/supabase"; fi
+              if [ -x "/usr/local/bin/supabase" ]; then SUPABASE_BIN="/usr/local/bin/supabase"; fi
+              if [ -f "./supabase" ]; then SUPABASE_BIN="./supabase"; fi
+            fi
+            if [ -z "$SUPABASE_BIN" ]; then
+              echo "Could not find supabase binary after install; will fallback to npm"
+            else
+              sudo mv "$SUPABASE_BIN" /usr/local/bin/supabase || true
+            fi
+          fi
+          # Fallback: install via npm
+          if ! command -v supabase >/dev/null 2>&1; then
+            echo "Installing supabase via npm (fallback)..."
+            npm install -g supabase || { echo "ERROR: npm install -g supabase failed"; exit 1; }
+          fi
+          echo "Supabase CLI version:"
+          supabase --version || true
 
-          echo "Downloading asset from: ${ASSET_URL}"
-          curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
-          file supabase_asset || true
-
-          if file supabase_asset | grep -qi 'gzip'; then
-            echo "Extracting tar.gz..."
-            rm -rf supabase
-            tar -](#)
+      - name: Deploy Supabase Edge Function
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          echo "Supabase CLI version:"
+          supabase --version || true
+          echo "Deploying function make-server-370b3cd1..."
+          supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_ACCESS_TOKEN"
