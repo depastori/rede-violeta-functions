@@ -18,42 +18,34 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Supabase CLI (download specific asset)
+      - name: Install Supabase CLI (download specific asset, no heredoc)
         run: |
           set -euo pipefail
-          echo "Getting latest tag from GitHub API..."
-          SUPABASE_CLI_TAG=$(python3 - <<'PY'
-import urllib.request, json, sys
-resp = urllib.request.urlopen("https://api.github.com/repos/supabase/cli/releases/latest").read()
-data = json.loads(resp.decode('utf-8'))
-print(data.get("tag_name",""))
-PY
-)
+          echo "Fetching latest release metadata..."
+          SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | sed -n 's/.*"tag_name": *"\([^"]]*\)".*/\1/p')
           if [ -z "$SUPABASE_CLI_TAG" ]; then
-            echo "Failed to read latest tag"; exit 1
+            echo "ERROR: could not determine latest tag"; exit 1
           fi
           SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
           echo "Latest tag: $SUPABASE_CLI_TAG -> version: $SUPABASE_CLI_VER"
           ASSET_URL="https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz"
           echo "Attempting download from: $ASSET_URL"
-          curl -L --fail -o supabase_asset "$ASSET_URL"
-          echo "Downloaded — checking file type..."
-          file supabase_asset || true
-          # try tar extraction
-          if tar -tzf supabase_asset >/dev/null 2>&1; then
-            tar -xzf supabase_asset
+          curl -L --fail -o supabase_asset.tar.gz "$ASSET_URL" || { echo "Download failed"; exit 1; }
+          echo "Downloaded — checking archive..."
+          if tar -tzf supabase_asset.tar.gz >/dev/null 2>&1; then
+            tar -xzf supabase_asset.tar.gz
           else
             # try unzip if zip
-            if file supabase_asset | grep -i zip >/dev/null 2>&1; then
-              apt-get update -y && apt-get install -y unzip
-              unzip supabase_asset
+            if file supabase_asset.tar.gz | grep -qi zip >/dev/null 2>&1; then
+              sudo apt-get update -y
+              sudo apt-get install -y unzip
+              unzip supabase_asset.tar.gz
             else
               # assume binary
-              chmod +x supabase_asset
-              mv supabase_asset supabase || true
+              chmod +x supabase_asset.tar.gz
+              mv supabase_asset.tar.gz supabase || true
             fi
           fi
-          # find binary
           SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n 1 || true)
           if [ -z "$SUPABASE_BIN" ]; then
             if [ -f "./supabase" ]; then
