@@ -18,27 +18,19 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Supabase CLI (download binary from Releases)
+      - name: Install Supabase CLI (download binary)
         run: |
-          # pega a tag da última release (ex: v1.2.3)
           SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
-          echo "Latest supabase cli tag: $SUPABASE_CLI_TAG"
-          # remove o 'v' do início para compor o nome do arquivo (ex: 1.2.3)
           SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
-          echo "Using version: $SUPABASE_CLI_VER"
-          # baixa tar.gz correspondente ao runner linux x86_64
           curl -sL "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz" -o supabase.tar.gz
           tar -xzf supabase.tar.gz
           sudo mv supabase /usr/local/bin/
-          supabase --version
+          /usr/local/bin/supabase --version
 
       - name: Deploy function
         env:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          supabase --version
-          supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
-        run: |
-          supabase --version
-          supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
+          /usr/local/bin/supabase --version
+          /usr/local/bin/supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
