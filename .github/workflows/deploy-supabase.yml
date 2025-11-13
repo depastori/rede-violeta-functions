@@ -1,36 +1,20 @@
-name: Deploy Supabase Edge Function
-
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Supabase CLI (download binary)
+- name: Install Supabase CLI (download binary)
         run: |
-          SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
+          # Busca a tag mais recente usando python (mais portátil que grep -P)
+          SUPABASE_CLI_TAG=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))")
+          if [ -z "$SUPABASE_CLI_TAG" ]; then
+            echo "ERROR: Não foi possível obter a tag mais recente do Supabase CLI"
+            echo "Resposta crua da API:"
+            curl -s https://api.github.com/repos/supabase/cli/releases/latest
+            exit 1
+          fi
+          echo "Latest supabase cli tag: $SUPABASE_CLI_TAG"
           SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
-          curl -sL "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz" -o supabase.tar.gz
-          tar -xzf supabase.tar.gz
-          sudo mv supabase /usr/local/bin/
+          echo "Using version: $SUPABASE_CLI_VER"
+          # tenta baixar o asset linux/amd64 (nome esperado: supabase_<vers>_linux_amd64.tar.gz)
+          URL="https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz"
+          echo "Downloading from: $URL"
+          curl -sL "$URL" -o supabase.tar.gz || { echo "Download falhou"; exit 1; }
+          tar -xzf supabase.tar.gz || { echo "Erro ao descompactar"; exit 1; }
+          sudo mv supabase /usr/local/bin/ || { echo "Erro ao mover binário para /usr/local/bin"; ls -la; exit 1; }
           /usr/local/bin/supabase --version
-
-      - name: Deploy function
-        env:
-          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          /usr/local/bin/supabase --version
-          /usr/local/bin/supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
