@@ -24,10 +24,29 @@ jobs:
         shell: bash
         run: |
           echo "Checking presence of secrets (values are masked)"
-          if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then echo "SUPABASE_ASSET_URL: present"; else echo "SUPABASE_ASSET_URL: MISSING"; fi
-          if [ -n "${{ secrets.SUPABASE_PROJECT_REF }}" ]; then echo "SUPABASE_PROJECT_REF: present"; else echo "SUPABASE_PROJECT_REF: MISSING"; fi
-          if [ -n "${{ secrets.SUPABASE_TOKEN }}" ]; then echo "SUPABASE_TOKEN: present"; else echo "SUPABASE_TOKEN: MISSING"; fi
-          if [ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then echo "SUPABASE_SERVICE_ROLE_KEY: present (fallback)"; else echo "SUPABASE_SERVICE_ROLE_KEY: NOT present"; fi
+          if [ -n "${{ secrets.SUPABASE_ASSET_URL }}" ]; then
+            echo "SUPABASE_ASSET_URL: present"
+          else
+            echo "SUPABASE_ASSET_URL: MISSING"
+          fi
+
+          if [ -n "${{ secrets.SUPABASE_PROJECT_REF }}" ]; then
+            echo "SUPABASE_PROJECT_REF: present"
+          else
+            echo "SUPABASE_PROJECT_REF: MISSING"
+          fi
+
+          if [ -n "${{ secrets.SUPABASE_TOKEN }}" ]; then
+            echo "SUPABASE_TOKEN: present"
+          else
+            echo "SUPABASE_TOKEN: MISSING"
+          fi
+
+          if [ -n "${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" ]; then
+            echo "SUPABASE_SERVICE_ROLE_KEY: present (fallback)"
+          else
+            echo "SUPABASE_SERVICE_ROLE_KEY: NOT present"
+          fi
 
       - name: Determine Supabase CLI asset URL
         shell: bash
