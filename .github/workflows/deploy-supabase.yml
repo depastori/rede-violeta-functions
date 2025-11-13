@@ -2,107 +2,58 @@ name: Deploy Supabase Edge Function
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
-
-env:
-  # Optional: set SUPABASE_CLI_TAG to a specific tag (e.g. v2.58.4). Leave empty to auto-detect latest.
-  SUPABASE_CLI_TAG: ""
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Prepare Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "18"
 
-      - name: Install Supabase CLI (auto-detect asset / fallback to npm)
+      - name: Install / Prepare Supabase CLI
+        shell: bash
         run: |
           set -euo pipefail
-          echo "SUPABASE_CLI_TAG (env): '$SUPABASE_CLI_TAG'"
-
-          if [ -z "$SUPABASE_CLI_TAG" ]; then
-            echo "Fetching latest release tag from GitHub API..."
-            RELEASE_JSON=$(curl -sS -H "User-Agent: GitHub-Actions" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/supabase/cli/releases/latest" || true)
-            TAG=$(printf '%s' "$RELEASE_JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' || true)
-            if [ -z "$TAG" ]; then
-              echo "WARN: Could not parse latest tag from API; leaving SUPABASE_CLI_TAG empty to try fallback."
-            else
-              SUPABASE_CLI_TAG="$TAG"
-              echo "Latest tag: $SUPABASE_CLI_TAG"
-            fi
-          else
-            echo "Using pinned tag: $SUPABASE_CLI_TAG"
-          fi
-
-          # Build a list of candidate download URLs from release JSON (if we fetched it) or release API
-          ASSET_URL=""
-          if [ -n "${RELEASE_JSON:-}" ]; then
-            # prefer .tar.gz/.tgz, then deb, pkg.tar.zst, rpm, apk
-            ASSET_URL=$(printf '%s' "$RELEASE_JSON" \
-              | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
-              | grep -i 'linux_amd64' \
-              | egrep -i '\.tar\.gz$|\.tgz$|\.deb$|\.pkg\.tar\.zst$|\.rpm$|\.apk$' \
-              | head -n1 || true)
-          fi
-
-          # If not found in release JSON but we have a tag, construct common names to test
-          if [ -z "$ASSET_URL" ] && [ -n "$SUPABASE_CLI_TAG" ]; then
-            VER="${SUPABASE_CLI_TAG#v}"
-            CANDIDATES=(
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.tar.gz"
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_linux_amd64.tar.gz"
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.deb"
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.pkg.tar.zst"
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.rpm"
-              "https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${VER}_linux_amd64.apk"
-            )
-            for u in "${CANDIDATES[@]}"; do
-              if curl -sfI "$u" >/dev/null 2>&1; then
-                ASSET_URL="$u"
-                break
-              fi
-            done
-          fi
 
           echo "Chosen asset URL: ${ASSET_URL:-<none>}"
 
-          if [ -n "$ASSET_URL" ]; then
+          # If an asset URL is provided (from a previous step or secret), download and extract it
+          if [ -n "${ASSET_URL:-}" ]; then
             echo "Downloading asset..."
             curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
             file supabase_asset || true
+
             # handle common formats
             if file supabase_asset | grep -qi 'gzip'; then
               echo "Extracting tar.gz..."
+              # Prevent tar extraction from failing when a previous 'supabase' file/dir exists
+              rm -rf supabase
               tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
+
+              # try to find the extracted binary
+              SUPABASE_BIN="$(find . -type f -name supabase -perm -111 -print -quit || true)"
             elif file supabase_asset | grep -qi 'Debian'; then
               echo "Installing .deb..."
-              sudo apt-get update -y
-              sudo apt-get install -y wget ca-certificates
-              sudo dpkg -i supabase_asset || sudo apt-get install -y -f
-            elif file supabase_asset | grep -qi 'XZ compressed'; then
-              echo "Handling pkg.tar.zst or similar..."
-              sudo apt-get update -y
-              sudo apt-get install -y zstd
-              # try to extract or move to proper place if needed
-              tar -I zstd -xf supabase_asset || true
+              sudo dpkg -i supabase_asset || { echo "ERROR: dpkg failed"; exit 1; }
+              SUPABASE_BIN="$(which supabase || true)"
             else
-              echo "Treating downloaded file as binary"
-              chmod +x supabase_asset || true
-              mv supabase_asset supabase || true
+              echo "Unknown asset format; skipping asset install."
+              SUPABASE_BIN=""
             fi
-            SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n1 || true)
-            [ -z "$SUPABASE_BIN" ] && [ -x "/usr/bin/supabase" ] && SUPABASE_BIN="/usr/bin/supabase"
-            [ -z "$SUPABASE_BIN" ] && [ -x "/usr/local/bin/supabase" ] && SUPABASE_BIN="/usr/local/bin/supabase"
-            [ -z "$SUPABASE_BIN" ] && [ -f "./supabase" ] && SUPABASE_BIN="./supabase"
+          else
+            SUPABASE_BIN=""
           fi
 
+          # Fallback to npm if no binary found
           if [ -z "${SUPABASE_BIN:-}" ]; then
             echo "No binary found from release assets — falling back to npm install"
             npm install -g supabase || { echo "ERROR: npm install -g supabase failed"; exit 1; }
@@ -113,17 +64,26 @@ jobs:
             echo "ERROR: supabase binary not found after all attempts"; exit 1
           fi
 
-          echo "Supabase binary: $SUPABASE_BIN"
-          if [ "$SUPABASE_BIN" != "/usr/local/bin/supabase" ]; then
-            sudo mv "$SUPABASE_BIN" /usr/local/bin/supabase || true
-          fi
-          /usr/local/bin/supabase --version || true
+          echo "SUPABASE_BIN=$SUPABASE_BIN" >> "$GITHUB_ENV"
+          echo "Using supabase binary at: $SUPABASE_BIN"
 
-      - name: Deploy function
+      - name: Deploy Supabase Edge Function
+        shell: bash
         env:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
-          /usr/local/bin/supabase --version || true
-          echo "Deploying function make-server-370b3cd1..."
-          /usr/local/bin/supabase functions deploy make-server-370b3cd1 --project-ref "$SUPABASE_PROJECT_REF" --token "$SUPABASE_SERVICE_ROLE_KEY"
+          set -euo pipefail
+
+          # Nome da função (já definido)
+          FUNCTION_NAME="make-server-370b3cd1"
+
+          if [ -z "${SUPABASE_BIN:-}" ]; then
+            echo "ERROR: SUPABASE_BIN not set in environment"
+            exit 1
+          fi
+
+          # Deploy
+          $SUPABASE_BIN functions deploy "$FUNCTION_NAME" \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --token "$SUPABASE_TOKEN" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
