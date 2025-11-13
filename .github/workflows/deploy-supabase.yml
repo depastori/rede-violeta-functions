@@ -18,57 +18,48 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Supabase CLI (robust download & extract)
+      - name: Install Supabase CLI (download specific asset)
         run: |
           set -euo pipefail
-          echo "Fetching latest release metadata..."
-          RELEASE_JSON=$(curl -s https://api.github.com/repos/supabase/cli/releases/latest)
-          echo "$RELEASE_JSON" | python3 -c "import sys,json; j=json.load(sys.stdin); print('tag='+j.get('tag_name',''))"
-          ASSET_URL=$(echo "$RELEASE_JSON" | python3 - <<'PY'
-import sys, json
-r = json.load(sys.stdin)
-assets = r.get("assets", [])
-# prefer filenames containing linux and amd64/x86_64
-for a in assets:
-    name = a.get("name","").lower()
-    if "linux" in name and ("amd64" in name or "x86_64" in name):
-        print(a.get("browser_download_url",""))
-        sys.exit(0)
-# fallback: try any asset containing 'linux'
-for a in assets:
-    name = a.get("name","").lower()
-    if "linux" in name:
-        print(a.get("browser_download_url",""))
-        sys.exit(0)
-print("", end="")
+          echo "Getting latest tag from GitHub API..."
+          SUPABASE_CLI_TAG=$(python3 - <<'PY'
+import urllib.request, json, sys
+resp = urllib.request.urlopen("https://api.github.com/repos/supabase/cli/releases/latest").read()
+data = json.loads(resp.decode('utf-8'))
+print(data.get("tag_name",""))
 PY
 )
-          if [ -z "$ASSET_URL" ]; then
-            echo "No suitable linux asset found in release metadata. Showing release JSON for debug:"
-            echo "$RELEASE_JSON"
-            exit 1
+          if [ -z "$SUPABASE_CLI_TAG" ]; then
+            echo "Failed to read latest tag"; exit 1
           fi
-          echo "Downloading asset: $ASSET_URL"
-          curl -L "$ASSET_URL" -o supabase_asset || { echo "Download failed"; exit 1; }
-          FILETYPE=$(file supabase_asset || true)
-          echo "Downloaded file type: $FILETYPE"
-          if echo "$ASSET_URL" | grep -E '\.tar\.gz$|\.tgz$' >/dev/null 2>&1 || echo "$FILETYPE" | grep -i gzip >/dev/null 2>&1; then
-            tar -xzf supabase_asset || { echo "Tar extraction failed"; ls -la; exit 1; }
-          elif echo "$ASSET_URL" | grep -E '\.zip$' >/dev/null 2>&1 || echo "$FILETYPE" | grep -i zip >/dev/null 2>&1; then
-            apt-get update -y && apt-get install -y unzip
-            unzip supabase_asset || { echo "Unzip failed"; ls -la; exit 1; }
+          SUPABASE_CLI_VER=${SUPABASE_CLI_TAG#v}
+          echo "Latest tag: $SUPABASE_CLI_TAG -> version: $SUPABASE_CLI_VER"
+          ASSET_URL="https://github.com/supabase/cli/releases/download/${SUPABASE_CLI_TAG}/supabase_${SUPABASE_CLI_VER}_linux_amd64.tar.gz"
+          echo "Attempting download from: $ASSET_URL"
+          curl -L --fail -o supabase_asset "$ASSET_URL"
+          echo "Downloaded — checking file type..."
+          file supabase_asset || true
+          # try tar extraction
+          if tar -tzf supabase_asset >/dev/null 2>&1; then
+            tar -xzf supabase_asset
           else
-            chmod +x supabase_asset
-            mv supabase_asset supabase || true
+            # try unzip if zip
+            if file supabase_asset | grep -i zip >/dev/null 2>&1; then
+              apt-get update -y && apt-get install -y unzip
+              unzip supabase_asset
+            else
+              # assume binary
+              chmod +x supabase_asset
+              mv supabase_asset supabase || true
+            fi
           fi
+          # find binary
           SUPABASE_BIN=$(find . -maxdepth 3 -type f -iname 'supabase*' -perm -111 2>/dev/null | head -n 1 || true)
           if [ -z "$SUPABASE_BIN" ]; then
             if [ -f "./supabase" ]; then
               SUPABASE_BIN="./supabase"
             else
-              echo "Could not find supabase binary after extraction. Listing files:"
-              ls -la
-              exit 1
+              echo "Could not find supabase binary after extraction"; ls -la; exit 1
             fi
           fi
           echo "Found supabase binary at: $SUPABASE_BIN"
