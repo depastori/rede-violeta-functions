@@ -19,49 +19,78 @@ jobs:
         with:
           node-version: "18"
 
+      - name: Determine Supabase CLI asset URL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPO="supabase/cli"
+          ARCH_UNAME="$(uname -m)"
+          case "$ARCH_UNAME" in
+            x86_64) ARCH="amd64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) ARCH="$ARCH_UNAME" ;;
+          esac
+
+          ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+            | grep -E 'browser_download_url' \
+            | grep -i "linux" \
+            | grep -i "$ARCH" \
+            | grep -iE "tar.gz|tgz|linux" \
+            | head -n1 \
+            | cut -d '\"' -f4 || true)"
+
+          if [ -z "$ASSET_URL" ]; then
+            ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+              | grep -E 'browser_download_url' \
+              | grep -i "linux" \
+              | grep -i "$ARCH" \
+              | grep -i '\.deb' \
+              | head -n1 \
+              | cut -d '\"' -f4 || true)"
+          fi
+
+          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
+          if [ -z "${ASSET_URL:-}" ]; then
+            echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set ASSET_URL manually as a secret or update the script."
+            exit 1
+          fi
+
+          echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
+
       - name: Install / Prepare Supabase CLI
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
+          echo "Downloading asset from: ${ASSET_URL}"
+          curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
+          file supabase_asset || true
 
-          # If an asset URL is provided (from a previous step or secret), download and extract it
-          if [ -n "${ASSET_URL:-}" ]; then
-            echo "Downloading asset..."
-            curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
-            file supabase_asset || true
+          if file supabase_asset | grep -qi 'gzip'; then
+            echo "Extracting tar.gz..."
+            rm -rf supabase
+            tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
 
-            # handle common formats
-            if file supabase_asset | grep -qi 'gzip'; then
-              echo "Extracting tar.gz..."
-              # Prevent tar extraction from failing when a previous 'supabase' file/dir exists
-              rm -rf supabase
-              tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
-
-              # try to find the extracted binary
-              SUPABASE_BIN="$(find . -type f -name supabase -perm -111 -print -quit || true)"
-            elif file supabase_asset | grep -qi 'Debian'; then
-              echo "Installing .deb..."
-              sudo dpkg -i supabase_asset || { echo "ERROR: dpkg failed"; exit 1; }
-              SUPABASE_BIN="$(which supabase || true)"
-            else
-              echo "Unknown asset format; skipping asset install."
-              SUPABASE_BIN=""
+            SUPABASE_BIN="$(find . -type f -name supabase -perm -111 -print -quit || true)"
+            if [ -n "$SUPABASE_BIN" ]; then
+              echo "Found supabase binary at: $SUPABASE_BIN"
+              sudo mv -f "$SUPABASE_BIN" /usr/local/bin/supabase
+              sudo chmod +x /usr/local/bin/supabase
+              SUPABASE_BIN="/usr/local/bin/supabase"
             fi
-          else
-            SUPABASE_BIN=""
-          fi
-
-          # Fallback to npm if no binary found
-          if [ -z "${SUPABASE_BIN:-}" ]; then
-            echo "No binary found from release assets — falling back to npm install"
-            npm install -g supabase || { echo "ERROR: npm install -g supabase failed"; exit 1; }
+          elif file supabase_asset | grep -qi 'Debian'; then
+            echo "Installing .deb..."
+            sudo dpkg -i supabase_asset || { echo "ERROR: dpkg failed"; exit 1; }
             SUPABASE_BIN="$(which supabase || true)"
+          else
+            echo "Unknown asset format; aborting."
+            exit 1
           fi
 
           if [ -z "${SUPABASE_BIN:-}" ]; then
-            echo "ERROR: supabase binary not found after all attempts"; exit 1
+            echo "ERROR: supabase binary not found after asset install"
+            exit 1
           fi
 
           echo "SUPABASE_BIN=$SUPABASE_BIN" >> "$GITHUB_ENV"
@@ -75,7 +104,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Nome da função (já definido)
           FUNCTION_NAME="make-server-370b3cd1"
 
           if [ -z "${SUPABASE_BIN:-}" ]; then
@@ -83,7 +111,6 @@ jobs:
             exit 1
           fi
 
-          # Deploy
           $SUPABASE_BIN functions deploy "$FUNCTION_NAME" \
             --project-ref "$SUPABASE_PROJECT_REF" \
             --token "$SUPABASE_TOKEN" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
