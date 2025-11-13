@@ -112,7 +112,7 @@ jobs:
         shell: bash
         env:
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_TOKEN }}   # token mapeado para a variável esperada pelo CLI
         run: |
           set -euo pipefail
 
@@ -124,6 +124,6 @@ jobs:
             exit 1
           fi
 
+          # Deploy sem usar a flag --token (o CLI usará SUPABASE_ACCESS_TOKEN)
           $SUPABASE_BIN functions deploy "$FUNCTION_NAME" \
-            --project-ref "$SUPABASE_PROJECT_REF" \
-            --token "$SUPABASE_TOKEN" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
+            --project-ref "$SUPABASE_PROJECT_REF" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
