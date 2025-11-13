@@ -1,130 +1,46 @@
-name: Deploy Supabase Edge Function
+name: Determine Supabase CLI asset URL
+  shell: bash
+  env:
+    ASSET_URL: ${{ secrets.SUPABASE_ASSET_URL }}
+  run: |
+    set -euo pipefail
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+    if [ -n "${ASSET_URL:-}" ]; then
+      echo "Using ASSET_URL from env/secret"
+      echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
+      exit 0
+    fi
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+    REPO="supabase/cli"
+    ARCH_UNAME="$(uname -m)"
+    case "$ARCH_UNAME" in
+      x86_64) ARCH="amd64" ;;
+      aarch64|arm64) ARCH="arm64" ;;
+      *) ARCH="$ARCH_UNAME" ;;
+    esac
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # Use sed to reliably pull browser_download_url from JSON, then filter by linux + arch
+    ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+      | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+      | grep -i "linux" \
+      | grep -i "$ARCH" \
+      | grep -iE "tar.gz|tgz" \
+      | head -n1 || true)"
 
-      - name: Prepare Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+    # fallback to .deb if no tar.gz found
+    if [ -z "$ASSET_URL" ]; then
+      ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
+        | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' \
+        | grep -i "linux" \
+        | grep -i "$ARCH" \
+        | grep -i '\.deb' \
+        | head -n1 || true)"
+    fi
 
-      - name: Determine Supabase CLI asset URL
-        shell: bash
-        env:
-          # Optional override: set this secret if you want a specific release asset
-          ASSET_URL: ${{ secrets.SUPABASE_ASSET_URL }}
-        run: |
-          set -euo pipefail
+    echo "Chosen asset URL: ${ASSET_URL:-<none>}"
+    if [ -z "${ASSET_URL:-}" ]; then
+      echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set SUPABASE_ASSET_URL secret to a release tar.gz/.deb URL."
+      exit 1
+    fi
 
-          if [ -n "${ASSET_URL:-}" ]; then
-            echo "Using ASSET_URL from env/secret"
-            echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          REPO="supabase/cli"
-          ARCH_UNAME="$(uname -m)"
-          case "$ARCH_UNAME" in
-            x86_64) ARCH="amd64" ;;
-            aarch64|arm64) ARCH="arm64" ;;
-            *) ARCH="$ARCH_UNAME" ;;
-          esac
-
-          # find a suitable linux release asset for this architecture
-          ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-            | grep -E 'browser_download_url' \
-            | grep -i "linux" \
-            | grep -i "$ARCH" \
-            | grep -iE "tar.gz|tgz" \
-            | head -n1 \
-            | cut -d '\"' -f4 || true)"
-
-          if [ -z "$ASSET_URL" ]; then
-            ASSET_URL="$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
-              | grep -E 'browser_download_url' \
-              | grep -i "linux" \
-              | grep -i "$ARCH" \
-              | grep -i '\.deb' \
-              | head -n1 \
-              | cut -d '\"' -f4 || true)"
-          fi
-
-          echo "Chosen asset URL: ${ASSET_URL:-<none>}"
-          if [ -z "${ASSET_URL:-}" ]; then
-            echo "ERROR: Could not determine a suitable Supabase CLI asset for this runner. Set SUPABASE_ASSET_URL secret to a release tar.gz/.deb URL."
-            exit 1
-          fi
-
-          echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
-
-      - name: Install / Prepare Supabase CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Downloading asset from: ${ASSET_URL}"
-          curl -L --fail -o supabase_asset "$ASSET_URL" || { echo "ERROR: download failed for $ASSET_URL"; exit 1; }
-          file supabase_asset || true
-
-          # handle tar.gz
-          if file supabase_asset | grep -qi 'gzip'; then
-            echo "Extracting tar.gz..."
-            rm -rf supabase
-            tar -xzf supabase_asset || { echo "ERROR: tar extraction failed"; exit 1; }
-
-            # try to find the extracted binary
-            SUPABASE_BIN="$(find . -type f -name supabase -perm -111 -print -quit || true)"
-            if [ -n "$SUPABASE_BIN" ]; then
-              echo "Found supabase binary at: $SUPABASE_BIN"
-              sudo mv -f "$SUPABASE_BIN" /usr/local/bin/supabase
-              sudo chmod +x /usr/local/bin/supabase
-              SUPABASE_BIN="/usr/local/bin/supabase"
-            fi
-
-          # handle .deb
-          elif file supabase_asset | grep -qi 'Debian'; then
-            echo "Installing .deb..."
-            sudo dpkg -i supabase_asset || { echo "ERROR: dpkg failed"; exit 1; }
-            SUPABASE_BIN="$(which supabase || true)"
-          else
-            echo "Unknown asset format; aborting."
-            exit 1
-          fi
-
-          if [ -z "${SUPABASE_BIN:-}" ]; then
-            echo "ERROR: supabase binary not found after asset install"
-            exit 1
-          fi
-
-          echo "SUPABASE_BIN=$SUPABASE_BIN" >> "$GITHUB_ENV"
-          echo "Using supabase binary at: $SUPABASE_BIN"
-
-      - name: Deploy Supabase Edge Function
-        shell: bash
-        env:
-          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          FUNCTION_NAME="make-server-370b3cd1"
-
-          if [ -z "${SUPABASE_BIN:-}" ]; then
-            echo "ERROR: SUPABASE_BIN not set in environment"
-            exit 1
-          fi
-
-          $SUPABASE_BIN functions deploy "$FUNCTION_NAME" \
-            --project-ref "$SUPABASE_PROJECT_REF" \
-            --token "$SUPABASE_TOKEN" || { echo "ERROR: supabase functions deploy failed"; exit 1; }
+    echo "ASSET_URL=$ASSET_URL" >> "$GITHUB_ENV"
